@@ -1,10 +1,11 @@
 // Local storage with SQLite (expo-sqlite). Everything stays on the phone.
 // Saves each recording's summary and its per-second results.
-// Raw EEG chunk files (brief section 12) are a later step.
+// Raw EEG CSV files live next to it, see rawEeg.ts.
 
 import * as SQLite from 'expo-sqlite';
 import type { RecordingSummary } from '../core/engine';
 import type { WindowResult } from '../core/types';
+import { deleteRawEeg } from './rawEeg';
 
 let dbPromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
@@ -73,4 +74,5 @@ export async function deleteSession(id: string): Promise<void> {
     await d.runAsync('DELETE FROM window_results WHERE session_id = ?', [id]);
     await d.runAsync('DELETE FROM sessions WHERE id = ?', [id]);
   });
+  deleteRawEeg(id);
 }

@@ -14,6 +14,7 @@ import {
   encodeCommand,
 } from '../src/core/museProtocol';
 import { EegBatch, SAMPLE_RATE } from '../src/core/types';
+import { RAW_CSV_HEADER, RawCsvRecorder } from '../src/core/rawCsv';
 
 const sine = (f: number, amp: number, n: number, fs = SAMPLE_RATE) =>
   Float32Array.from({ length: n }, (_, i) => amp * Math.sin((2 * Math.PI * f * i) / fs));
@@ -171,4 +172,67 @@ test('PSD output written for Python parity check', async () => {
   const { power } = psd(x, SAMPLE_RATE);
   fs.mkdirSync('tests/out', { recursive: true });
   fs.writeFileSync('tests/out/psd_fixture.json', JSON.stringify({ x: Array.from(x), power: Array.from(power) }));
+});
+
+test('raw CSV: header, one row per sample, sample index jumps over a gap', () => {
+  const writes: string[] = [];
+  const rec = new RawCsvRecorder(1_000_000, { write: (t) => writes.push(t), remove: () => undefined }, 256);
+  const batch = (first: number, n: number, gap = false): EegBatch => ({
+    firstSampleIndex: first,
+    receivedMs: 0,
+    sampleCount: n,
+    channels: [0, 1, 2, 3].map((c) => Float32Array.from({ length: n }, (_, i) => c * 100 + i)),
+    gapBefore: gap,
+  });
+  rec.append(batch(500, 12)); // recording starts mid-stream at sample 500
+  assert.equal(writes.length, 0, 'not written until ~1 s is collected');
+  rec.append(batch(536, 12, true)); // 24 samples lost
+  const info = rec.finish();
+  assert.deepEqual(info, { samples: 24, ok: true });
+  const lines = writes.join('').trimEnd().split('\n');
+  assert.equal(lines[0] + '\n', RAW_CSV_HEADER);
+  assert.equal(lines[0], 'sample,time_s,unix_ms,TP9_uV,AF7_uV,AF8_uV,TP10_uV,gap');
+  assert.equal(lines.length, 1 + 24);
+  assert.equal(lines[1], '0,0,1000000,0.000,100.000,200.000,300.000,0');
+  assert.equal(lines[2], '1,0.00390625,1000004,1.000,101.000,201.000,301.000,0');
+  assert.equal(lines[13], '36,0.140625,1000141,0.000,100.000,200.000,300.000,1');
+  assert.equal(lines[14].split(',').at(-1), '0', 'gap flag only on the first sample after the gap');
+});
+
+test('raw CSV: a failed write stops saving but does not throw', () => {
+  const rec = new RawCsvRecorder(0, { write: () => { throw new Error('disk full'); }, remove: () => undefined }, 1);
+  const b: EegBatch = { firstSampleIndex: 0, receivedMs: 0, sampleCount: 1, channels: [0, 1, 2, 3].map(() => new Float32Array(1)), gapBefore: false };
+  rec.append(b);
+  rec.append(b);
+  assert.equal(rec.finish().ok, false);
+});
+
+test('engine: raw EEG is saved only while recording, cancel deletes it', () => {
+  const gen = new FakeEegGenerator({ seed: 5 });
+  const eng = new SessionEngine();
+  let text = '';
+  let removed = false;
+  const io = { write: (t: string) => (text += t), remove: () => (removed = true) };
+  let idx = 0;
+  const feed = (seconds: number) => {
+    for (let i = 0; i < seconds; i++) {
+      eng.handleBatch({ firstSampleIndex: idx, receivedMs: 0, sampleCount: 256, channels: gen.next(256), gapBefore: false });
+      idx += 256;
+    }
+  };
+  feed(2); // before recording: not saved
+  eng.startRecording((_id, startedAt) => new RawCsvRecorder(startedAt, io));
+  feed(7);
+  const res = eng.stopRecording()!;
+  feed(2); // after recording: not saved
+  assert.deepEqual(res.summary.rawEeg, { samples: 7 * 256, ok: true });
+  const lines = text.trimEnd().split('\n');
+  assert.equal(lines.length, 1 + 7 * 256);
+  assert.ok(lines[1].startsWith('0,0,'), 'time starts at 0 at the start of the recording');
+
+  eng.startRecording((_id, startedAt) => new RawCsvRecorder(startedAt, io));
+  feed(1);
+  eng.cancelRecording();
+  assert.equal(removed, true);
+  assert.equal(eng.isRecording, false);
 });

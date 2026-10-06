@@ -52,7 +52,7 @@ export class SimulatedMuse implements DeviceSource {
       const n = Math.min(due, SAMPLE_RATE); // cap catch-up after the app was paused
       const channels = this.gen.next(n);
       const batch: EegBatch = {
-        firstSampleIndex: this.sent,
+        firstSampleIndex: this.sent + due - n, // after a capped catch-up, these are the newest samples
         receivedMs: Date.now(),
         sampleCount: n,
         channels,

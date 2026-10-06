@@ -1,8 +1,9 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, Pressable, ScrollView, Text, View } from 'react-native';
 import type { RecordingSummary } from '../core/engine';
-import { WindowResult } from '../core/types';
+import { MUSE_CHANNELS, SAMPLE_RATE, WindowResult } from '../core/types';
 import { deleteSession, getSessionResults, listSessions } from '../storage/db';
+import { rawEegSize, shareRawEeg } from '../storage/rawEeg';
 import { BandBars, Button, Card, ScoreTimeline, SectionTitle, Stat, Tag } from './components';
 import { colors, labelColor, space } from './theme';
 
@@ -11,6 +12,7 @@ const fmtDate = (ms: number) => {
   const d = new Date(ms);
   return `${d.toLocaleDateString()} · ${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
 };
+const fmtSize = (b: number) => (b < 1e6 ? `${Math.max(1, Math.round(b / 1e3))} KB` : `${(b / 1e6).toFixed(1)} MB`);
 const topLabel = (s: RecordingSummary) =>
   (Object.entries(s.labelCounts) as [string, number][]).sort((a, b) => b[1] - a[1]).find(([, n]) => n > 0)?.[0];
 
@@ -80,6 +82,25 @@ function ReviewScreen({ summary, onBack, onDeleted }: { summary: RecordingSummar
     getSessionResults(summary.id).then(setResults).catch(() => setResults([]));
   }, [summary.id]);
 
+  const [rawSize] = useState(() => {
+    try {
+      return rawEegSize(summary.id);
+    } catch {
+      return null;
+    }
+  });
+  const [exporting, setExporting] = useState(false);
+  const exportCsv = async () => {
+    setExporting(true);
+    try {
+      await shareRawEeg(summary.id);
+    } catch (e: any) {
+      Alert.alert('Could not export', e?.message ?? String(e));
+    } finally {
+      setExporting(false);
+    }
+  };
+
   const valid = summary.windows - summary.abstained;
   const pct = (n: number) => (valid ? `${Math.round((n / valid) * 100)}%` : '–');
 
@@ -136,6 +157,25 @@ function ReviewScreen({ summary, onBack, onDeleted }: { summary: RecordingSummar
           </Text>
         </Card>
       )}
+
+      <Card style={{ gap: space.md }}>
+        <SectionTitle>Raw EEG</SectionTitle>
+        {rawSize === null ? (
+          <Text style={{ color: colors.muted }}>No raw EEG file for this session (recorded before raw saving was added).</Text>
+        ) : (
+          <>
+            <Text style={{ color: colors.muted, lineHeight: 20 }}>
+              All 4 sensors ({MUSE_CHANNELS.join(', ')}), unfiltered µV, {SAMPLE_RATE} samples per second
+              {summary.rawEeg ? ` · ${summary.rawEeg.samples.toLocaleString()} samples` : ''} · {fmtSize(rawSize)}
+              {summary.sourceKind === 'simulated' ? ' · FAKE DATA' : ''}
+            </Text>
+            {summary.rawEeg && !summary.rawEeg.ok && (
+              <Text style={{ color: colors.fair }}>Saving stopped early (phone storage?). The file is incomplete.</Text>
+            )}
+            <Button title={exporting ? 'Opening…' : 'Export CSV'} onPress={exportCsv} disabled={exporting} />
+          </>
+        )}
+      </Card>
 
       <Button
         title="Delete this session"

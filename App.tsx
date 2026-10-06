@@ -54,7 +54,7 @@ export default function App() {
         setDetail(d);
         if (s === 'disconnected' && conn.current?.source === source) {
           // headband dropped: stop any recording rather than pretending it continued
-          engine.stopRecording();
+          engine.cancelRecording();
           conn.current = null;
         }
       }),

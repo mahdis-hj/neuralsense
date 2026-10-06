@@ -6,6 +6,7 @@
 import { ChannelFilter, bandPowers, relativeBands } from './dsp';
 import { runDemoModel } from './demoModel';
 import { channelQuality } from './quality';
+import type { RawEegInfo, RawSink } from './rawCsv';
 import { BANDS, BandName, BandPowers, CHANNEL_COUNT, EegBatch, SAMPLE_RATE, WindowResult } from './types';
 
 export const WINDOW_SAMPLES = 4 * SAMPLE_RATE; // 4 s window
@@ -25,6 +26,7 @@ export type RecordingSummary = {
   labelCounts: { Calm: number; Neutral: number; Active: number };
   meanRelBands: BandPowers;
   modelId: string;
+  rawEeg?: RawEegInfo; // missing for sessions recorded before raw saving existed
 };
 
 class Ring {
@@ -65,7 +67,14 @@ export class SessionEngine {
   totalGaps = 0;
 
   // recording state
-  private rec: { id: string; startedAt: number; startSample: number; results: WindowResult[]; gaps: number } | null = null;
+  private rec: {
+    id: string;
+    startedAt: number;
+    startSample: number;
+    results: WindowResult[];
+    gaps: number;
+    raw: RawSink | null;
+  } | null = null;
 
   constructor(private sourceKind: string = 'simulated', private modelId = 'demo_rule_alpha_beta') {}
 
@@ -83,6 +92,7 @@ export class SessionEngine {
   }
 
   handleBatch(batch: EegBatch): void {
+    this.rec?.raw?.append(batch);
     if (batch.gapBefore) {
       // never pretend a gap is continuous signal: restart filters and windows
       this.totalGaps++;
@@ -135,10 +145,24 @@ export class SessionEngine {
     return this.rec ? (this.streamSamples - this.rec.startSample) / SAMPLE_RATE : 0;
   }
 
-  startRecording(): string {
+  /** `makeRawSink` (optional) creates the raw EEG file for this recording. */
+  startRecording(makeRawSink?: (id: string, startedAt: number) => RawSink): string {
     const id = `ses_${Date.now().toString(36)}_${Math.floor(Math.random() * 1e6).toString(36)}`;
-    this.rec = { id, startedAt: Date.now(), startSample: this.streamSamples, results: [], gaps: 0 };
+    const startedAt = Date.now();
+    let raw: RawSink | null = null;
+    try {
+      raw = makeRawSink ? makeRawSink(id, startedAt) : null;
+    } catch {
+      raw = null; // could not create the file: still record results
+    }
+    this.rec = { id, startedAt, startSample: this.streamSamples, results: [], gaps: 0, raw };
     return id;
+  }
+
+  /** Stop without keeping anything (also deletes the raw EEG file). */
+  cancelRecording(): void {
+    this.rec?.raw?.discard();
+    this.rec = null;
   }
 
   stopRecording(): { summary: RecordingSummary; results: WindowResult[] } | null {
@@ -160,6 +184,7 @@ export class SessionEngine {
       labelCounts,
       meanRelBands: averageBands(valid.map((x) => x.relBands)),
       modelId: this.modelId,
+      rawEeg: r.raw ? r.raw.finish() : undefined,
     };
     return { summary, results: r.results };
   }

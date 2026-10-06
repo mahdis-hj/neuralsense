@@ -5,6 +5,7 @@ import { SessionEngine } from '../core/engine';
 import { DeviceSource, MUSE_CHANNELS, WindowResult } from '../core/types';
 import { SimulatedMuse } from '../device/SimulatedMuse';
 import { saveSession } from '../storage/db';
+import { createRawEegSink, deleteRawEeg } from '../storage/rawEeg';
 import { BandBars, Button, Card, ContactMap, SectionTitle, Tag, Waveforms } from './components';
 import { colors, labelColor, space } from './theme';
 
@@ -40,7 +41,7 @@ export function LiveScreen({
 
   const toggleRecord = async () => {
     if (!recording) {
-      engine.startRecording();
+      engine.startRecording(createRawEegSink);
       setTick((t) => t + 1);
       return;
     }
@@ -48,6 +49,7 @@ export function LiveScreen({
     setTick((t) => t + 1);
     if (!out) return;
     if (out.summary.windows === 0) {
+      deleteRawEeg(out.summary.id);
       Alert.alert('Recording too short', 'Record for at least a few seconds to get results.');
       return;
     }
@@ -55,6 +57,7 @@ export function LiveScreen({
       await saveSession(out.summary, out.results);
       onSaved();
     } catch (e: any) {
+      deleteRawEeg(out.summary.id);
       Alert.alert('Could not save', e?.message ?? String(e));
     }
   };
@@ -149,7 +152,7 @@ export function LiveScreen({
           title="Disconnect"
           kind="secondary"
           onPress={() => {
-            if (recording) engine.stopRecording();
+            if (recording) engine.cancelRecording();
             onDisconnect();
           }}
         />
